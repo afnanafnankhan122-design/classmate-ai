@@ -1,0 +1,1 @@
+"""ClassMate AI backend package."""
