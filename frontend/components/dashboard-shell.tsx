@@ -30,11 +30,8 @@ import {
   Search,
   ShieldCheck,
   Sparkles,
-  User,
   UserCircle2,
-  Wand2,
   X,
-  XCircle,
 } from "lucide-react";
 import {
   Area,
@@ -46,6 +43,12 @@ import {
   YAxis,
 } from "recharts";
 import { ClassroomPanel } from "@/components/classroom-panel";
+import { ForgotPasswordView } from "@/components/auth/forgot-password-view";
+import { LoginView } from "@/components/auth/login-view";
+import { RegisterView } from "@/components/auth/register-view";
+import { ResetPasswordView } from "@/components/auth/reset-password-view";
+import { AccountSettingsView } from "@/components/settings/account-settings-view";
+import type { AccountSettingsTab } from "@/components/settings/account-settings-view";
 import { requestJson, safeUrl } from "@/lib/api";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -61,7 +64,10 @@ type View =
   | "ai-workspace"
   | "pdf-documents"
   | "submission-history"
-  | "notifications";
+  | "notifications"
+  | "settings";
+
+type AuthPage = "login" | "register" | "forgot-password" | "reset-password";
 
 type AssignmentFilter =
   | "all"
@@ -120,13 +126,17 @@ type SessionInfo = {
   authenticated: boolean;
   google_connected: boolean;
   google_oauth_configured: boolean;
+  unread_notifications?: number;
   user?: {
+    id?: number;
     full_name: string;
     email: string;
     roll_number: string | null;
     department: string | null;
     semester: string | null;
-  };
+    avatar_url?: string | null;
+    email_verified?: boolean;
+  } | null;
   google_email?: string | null;
   last_synced_at?: string | null;
 };
@@ -171,7 +181,7 @@ const navItems: { label: string; icon: React.ElementType; view: View }[] = [
   { label: "PDF Documents", icon: FileText, view: "pdf-documents" },
   { label: "Submission History", icon: CheckCircle2, view: "submission-history" },
   { label: "Notifications", icon: Bell, view: "notifications" },
-  { label: "Settings", icon: ShieldCheck, view: "dashboard" },
+  { label: "Settings", icon: ShieldCheck, view: "settings" },
 ];
 
 // Map stat card labels → (view, filter)
@@ -296,10 +306,9 @@ function AssignmentTable({
                 <td className="py-3 pr-4 text-slate-300">{a.deadline}</td>
                 <td className="py-3 pr-4">
                   <span
-                    className={`inline-flex rounded-full px-2.5 py-1 text-xs ${
-                      statusTone[a.status] ??
+                    className={`inline-flex rounded-full px-2.5 py-1 text-xs ${statusTone[a.status] ??
                       "bg-slate-700/50 text-slate-300"
-                    }`}
+                      }`}
                   >
                     {a.status}
                   </span>
@@ -349,10 +358,6 @@ function AssignmentsView({
   const [filter, setFilter] = useState<AssignmentFilter>(initialFilter);
 
   // Sync if parent changes initialFilter (e.g. card click)
-  useEffect(() => {
-    setFilter(initialFilter);
-  }, [initialFilter]);
-
   const filters: { label: string; key: AssignmentFilter }[] = [
     { label: "All", key: "all" },
     { label: "Pending", key: "pending" },
@@ -386,11 +391,10 @@ function AssignmentsView({
           <button
             key={key}
             onClick={() => setFilter(key)}
-            className={`rounded-full px-3 py-1.5 text-xs transition ${
-              filter === key
-                ? "bg-blue-500/20 text-blue-300 ring-1 ring-blue-400/40"
-                : "border border-slate-700 text-slate-400 hover:border-slate-500 hover:text-slate-200"
-            }`}
+            className={`rounded-full px-3 py-1.5 text-xs transition ${filter === key
+              ? "bg-blue-500/20 text-blue-300 ring-1 ring-blue-400/40"
+              : "border border-slate-700 text-slate-400 hover:border-slate-500 hover:text-slate-200"
+              }`}
           >
             {label}
           </button>
@@ -549,79 +553,115 @@ function SubmissionHistoryView({ rows, loading }: { rows: AssignmentRow[]; loadi
   );
 }
 
-function NotificationsView({
-  dashData,
-  session,
-}: {
-  dashData: DashboardData | null;
-  session: SessionInfo | null;
-}) {
-  const items: { text: string; time: string; type: "info" | "warn" | "ok" }[] = [];
+type NotificationItem = {
+  id: number;
+  title: string;
+  message: string;
+  category: string;
+  is_read: boolean;
+  created_at: string | null;
+};
 
-  if (dashData && !dashData.is_demo) {
-    if (dashData.last_synced_at) {
-      items.push({ text: "Google Classroom sync completed", time: dashData.last_synced_at, type: "ok" });
+function NotificationsView({ onRefresh }: { onRefresh: () => void }) {
+  const [items, setItems] = useState<NotificationItem[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const fetchNotifications = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const result = await requestJson<{ notifications: NotificationItem[] }>("/notifications");
+      setItems(result.notifications);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not load notifications.");
+    } finally {
+      setLoading(false);
     }
-    if (dashData.metrics) {
-      const { overdue, due_today } = dashData.metrics;
-      if (overdue > 0)
-        items.push({
-          text: `${overdue} overdue assignment${overdue !== 1 ? "s" : ""} — submit as soon as possible`,
-          time: "Now",
-          type: "warn",
-        });
-      if (due_today > 0)
-        items.push({
-          text: `${due_today} assignment${due_today !== 1 ? "s" : ""} due today`,
-          time: "Today",
-          type: "warn",
-        });
+  }, []);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => void fetchNotifications(), 0);
+    return () => window.clearTimeout(timer);
+  }, [fetchNotifications]);
+
+  async function markRead(id: number) {
+    try {
+      await requestJson(`/notifications/${id}/read`, { method: "PATCH" });
+      setItems((current) =>
+        current.map((item) => item.id === id ? { ...item, is_read: true } : item),
+      );
+      onRefresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not update notification.");
     }
-    dashData.recentActivity.forEach((a) => {
-      items.push({ text: a.text, time: a.time, type: "info" });
-    });
   }
 
-  if (session?.google_connected) {
-    items.push({
-      text: `Google account connected (${session.google_email ?? "linked"})`,
-      time: "Active",
-      type: "ok",
-    });
+  async function markAllRead() {
+    try {
+      await requestJson("/notifications/read-all", { method: "POST" });
+      setItems((current) => current.map((item) => ({ ...item, is_read: true })));
+      onRefresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not update notifications.");
+    }
   }
 
   return (
-    <PageShell title="Notifications" subtitle="System events and assignment alerts">
-      {items.length === 0 ? (
+    <PageShell title="Notifications" subtitle="Recent account and Classroom events">
+      <div className="mb-4 flex justify-end gap-2">
+        <button
+          type="button"
+          onClick={() => void fetchNotifications()}
+          disabled={loading}
+          className="rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-300 transition hover:border-slate-500 disabled:opacity-50"
+        >
+          Refresh
+        </button>
+        <button
+          type="button"
+          onClick={() => void markAllRead()}
+          disabled={loading || items.every((item) => item.is_read)}
+          className="rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-300 transition hover:border-slate-500 disabled:opacity-50"
+        >
+          Mark all as read
+        </button>
+      </div>
+      {error && (
+        <div role="alert" className="mb-4 rounded-xl border border-rose-500/30 bg-rose-500/10 p-3 text-sm text-rose-300">
+          {error}
+        </div>
+      )}
+      {loading ? (
+        <div className="flex items-center justify-center gap-2 py-12 text-sm text-slate-400">
+          <Loader2 className="h-4 w-4 animate-spin" /> Loading notifications…
+        </div>
+      ) : items.length === 0 ? (
         <EmptyState message="No notifications. Connect Google Classroom to receive alerts." />
       ) : (
         <div className="space-y-3">
-          {items.map((item, i) => (
+          {items.map((item) => (
             <div
-              key={i}
-              className="flex items-start gap-3 rounded-xl border border-slate-800 bg-slate-900/50 p-3"
+              key={item.id}
+              className={`flex items-start gap-3 rounded-xl border p-3 ${item.is_read ? "border-slate-800 bg-slate-900/40" : "border-cyan-500/30 bg-cyan-950/20"}`}
             >
-              <div
-                className={`mt-0.5 rounded-full p-1.5 ${
-                  item.type === "warn"
-                    ? "bg-amber-500/15 text-amber-300"
-                    : item.type === "ok"
-                    ? "bg-emerald-500/15 text-emerald-300"
-                    : "bg-blue-500/15 text-blue-300"
-                }`}
-              >
-                {item.type === "warn" ? (
-                  <AlertTriangle className="h-3.5 w-3.5" />
-                ) : item.type === "ok" ? (
-                  <CheckCircle2 className="h-3.5 w-3.5" />
-                ) : (
-                  <Bell className="h-3.5 w-3.5" />
-                )}
-              </div>
+              <Bell className="mt-1 h-4 w-4 shrink-0 text-cyan-300" />
               <div className="flex-1">
-                <p className="text-sm text-slate-100">{item.text}</p>
-                <p className="text-xs text-slate-400">{item.time}</p>
+                <p className="text-sm font-medium text-slate-100">{item.title}</p>
+                <p className="mt-1 text-sm text-slate-300">{item.message}</p>
+                <p className="mt-2 text-xs text-slate-500">
+                  {item.category} · {item.created_at ? new Date(item.created_at).toLocaleString() : "Recently"}
+                </p>
               </div>
+              {!item.is_read && (
+                <button
+                  type="button"
+                  onClick={() => void markRead(item.id)}
+                  className="shrink-0 rounded-lg px-2 py-1 text-xs text-cyan-300 hover:bg-cyan-500/10"
+                >
+                  Mark read
+                </button>
+              )}
             </div>
           ))}
         </div>
@@ -810,9 +850,11 @@ function SearchBar({
 function ProfileDropdown({
   session,
   onLogout,
+  onSettings,
 }: {
   session: SessionInfo | null;
   onLogout: () => void;
+  onSettings: (tab: AccountSettingsTab) => void;
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -828,11 +870,11 @@ function ProfileDropdown({
   const user = session?.user;
   const initials = user?.full_name
     ? user.full_name
-        .split(" ")
-        .map((w) => w[0])
-        .slice(0, 2)
-        .join("")
-        .toUpperCase()
+      .split(" ")
+      .map((w) => w[0])
+      .slice(0, 2)
+      .join("")
+      .toUpperCase()
     : "SA";
 
   return (
@@ -886,6 +928,24 @@ function ProfileDropdown({
               </p>
             </div>
           )}
+          {([
+            { tab: "profile", label: "Student Profile" },
+            { tab: "profile", label: "Account Settings" },
+            { tab: "security", label: "Change Password" },
+            { tab: "google", label: "Google Classroom Connection" },
+          ] as const).map(({ tab, label }) => (
+            <button
+              key={label}
+              onClick={() => {
+                setOpen(false);
+                onSettings(tab);
+              }}
+              className="flex w-full items-center gap-3 px-4 py-2.5 text-left text-sm text-slate-200 transition hover:bg-slate-800/70"
+            >
+              <ShieldCheck className="h-4 w-4 text-cyan-300" />
+              {label}
+            </button>
+          ))}
           <button
             onClick={() => {
               setOpen(false);
@@ -908,6 +968,11 @@ export function DashboardShell() {
   const [view, setView] = useState<View>("dashboard");
   const [assignmentFilter, setAssignmentFilter] = useState<AssignmentFilter>("all");
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [settingsTab, setSettingsTab] = useState<AccountSettingsTab>("profile");
+  const [authPage, setAuthPage] = useState<AuthPage | null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [authNotice, setAuthNotice] = useState<string | null>(null);
+  const [resetToken, setResetToken] = useState("");
 
   // Session / auth
   const [session, setSession] = useState<SessionInfo | null>(null);
@@ -940,10 +1005,30 @@ export function DashboardShell() {
     try {
       const s = await requestJson<SessionInfo>("/auth/me");
       setSession(s);
-    } catch {
+      if (s.authenticated) {
+        setAuthPage(null);
+      } else {
+        setAuthPage("login");
+        setDashData(null);
+      }
+      return s;
+    } catch (err) {
       setSession(null);
+      setAuthPage("login");
+      setAuthNotice(err instanceof Error ? err.message : "Could not verify your session.");
+      return null;
+    } finally {
+      setAuthLoading(false);
     }
   }, []);
+
+  const handleAuthSuccess = useCallback(async () => {
+    setAuthNotice(null);
+    const currentSession = await fetchSession();
+    if (currentSession?.authenticated) {
+      void fetchDashboard();
+    }
+  }, [fetchDashboard, fetchSession]);
 
   // ── Fetch courses for classrooms view ──
   const fetchCourses = useCallback(async () => {
@@ -959,27 +1044,37 @@ export function DashboardShell() {
   }, []);
 
   useEffect(() => {
-    void fetchDashboard();
-    void fetchSession();
+    const timer = window.setTimeout(() => {
+      void fetchSession().then((currentSession) => {
+        if (currentSession?.authenticated) {
+          void fetchDashboard();
+        }
+      });
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, [fetchDashboard, fetchSession]);
 
   // Load courses when switching to classrooms view
   useEffect(() => {
     if (view === "classrooms" && courses.length === 0) {
-      void fetchCourses();
+      const timer = window.setTimeout(() => void fetchCourses(), 0);
+      return () => window.clearTimeout(timer);
     }
+    return undefined;
   }, [view, courses.length, fetchCourses]);
 
   // ── Logout ──
   const handleLogout = useCallback(async () => {
     try {
       await requestJson("/auth/logout", { method: "POST" });
-    } catch { /* ignore */ }
+      setAuthNotice(null);
+    } catch (err) {
+      setAuthNotice(err instanceof Error ? err.message : "Could not confirm sign out.");
+    }
     setSession(null);
     setDashData(null);
-    void fetchDashboard();
-    void fetchSession();
-  }, [fetchDashboard, fetchSession]);
+    setAuthPage("login");
+  }, []);
 
   // ── Navigation helper ──
   const navigate = useCallback(
@@ -1005,9 +1100,9 @@ export function DashboardShell() {
   }
 
   // ── ClassroomPanel session callback ──
-  const handleSessionChange = useCallback((s: SessionInfo) => {
-    setSession(s);
-  }, []);
+  const handleSessionChange = useCallback(() => {
+    void fetchSession();
+  }, [fetchSession]);
 
   const googleConnected = session?.google_connected ?? false;
   const student = session?.user ?? null;
@@ -1030,6 +1125,7 @@ export function DashboardShell() {
     if (view === "assignments") {
       return (
         <AssignmentsView
+          key={assignmentFilter}
           allRows={allRows}
           loading={dashLoading}
           initialFilter={assignmentFilter}
@@ -1052,7 +1148,33 @@ export function DashboardShell() {
       return <SubmissionHistoryView rows={allRows} loading={dashLoading} />;
     }
     if (view === "notifications") {
-      return <NotificationsView dashData={dashData} session={session} />;
+      return <NotificationsView onRefresh={() => void fetchSession()} />;
+    }
+    if (view === "settings" && student) {
+      return (
+        <AccountSettingsView
+          key={settingsTab}
+          student={{
+            id: student.id ?? 0,
+            full_name: student.full_name,
+            email: student.email,
+            roll_number: student.roll_number,
+            department: student.department,
+            semester: student.semester,
+            avatar_url: student.avatar_url,
+            email_verified: student.email_verified,
+          }}
+          initialTab={settingsTab}
+          googleConnected={googleConnected}
+          googleEmail={session?.google_email}
+          lastSyncedAt={session?.last_synced_at}
+          onProfileUpdated={() => {
+            void fetchSession();
+            void fetchDashboard();
+          }}
+          onLogout={handleLogout}
+        />
+      );
     }
     if (view === "ai-workspace") {
       return (
@@ -1079,18 +1201,18 @@ export function DashboardShell() {
           {dashLoading
             ? Array.from({ length: 6 }).map((_, i) => <StatSkeleton key={i} />)
             : dashError
-            ? (
-              <div className="col-span-3 rounded-2xl border border-rose-800/50 bg-rose-900/20 p-4 text-sm text-rose-300">
-                <AlertTriangle className="mb-1 inline h-4 w-4" /> {dashError}
-                <button
-                  onClick={() => void fetchDashboard()}
-                  className="ml-3 underline hover:no-underline"
-                >
-                  Retry
-                </button>
-              </div>
-            )
-            : stats.map(({ label, value, delta, tone }) => {
+              ? (
+                <div className="col-span-3 rounded-2xl border border-rose-800/50 bg-rose-900/20 p-4 text-sm text-rose-300">
+                  <AlertTriangle className="mb-1 inline h-4 w-4" /> {dashError}
+                  <button
+                    onClick={() => void fetchDashboard()}
+                    className="ml-3 underline hover:no-underline"
+                  >
+                    Retry
+                  </button>
+                </div>
+              )
+              : stats.map(({ label, value, delta, tone }) => {
                 const nav = statCardNav[label];
                 return (
                   <button
@@ -1319,8 +1441,60 @@ export function DashboardShell() {
     "pdf-documents": "PDF Documents",
     "submission-history": "Submission History",
     notifications: "Notifications",
+    settings: "Account Settings",
   };
   const pageTitle = view === "dashboard" ? "Dashboard" : (viewTitles[view] ?? "Dashboard");
+
+  if (authLoading) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-[#090D18] text-slate-300">
+        <div className="flex items-center gap-3 text-sm">
+          <Loader2 className="h-5 w-5 animate-spin text-cyan-300" />
+          Checking your ClassMate AI session…
+        </div>
+      </div>
+    );
+  }
+
+  if (authPage) {
+    return (
+      <>
+        {authNotice && (
+          <div role="alert" className="fixed inset-x-4 top-4 z-50 mx-auto max-w-md rounded-xl border border-amber-500/30 bg-amber-950/90 p-3 text-sm text-amber-200">
+            {authNotice}
+          </div>
+        )}
+        {authPage === "login" && (
+          <LoginView
+            onSuccess={() => void handleAuthSuccess()}
+            onNavigateRegister={() => setAuthPage("register")}
+            onNavigateForgotPassword={() => setAuthPage("forgot-password")}
+          />
+        )}
+        {authPage === "register" && (
+          <RegisterView
+            onSuccess={() => void handleAuthSuccess()}
+            onNavigateLogin={() => setAuthPage("login")}
+          />
+        )}
+        {authPage === "forgot-password" && (
+          <ForgotPasswordView
+            onNavigateLogin={() => setAuthPage("login")}
+            onNavigateResetPassword={() => {
+              setResetToken("");
+              setAuthPage("reset-password");
+            }}
+          />
+        )}
+        {authPage === "reset-password" && (
+          <ResetPasswordView
+            initialToken={resetToken}
+            onNavigateLogin={() => setAuthPage("login")}
+          />
+        )}
+      </>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-[#090D18] text-slate-100">
@@ -1335,9 +1509,8 @@ export function DashboardShell() {
       <div className="flex min-h-screen">
         {/* ── Sidebar ── */}
         <aside
-          className={`fixed inset-y-0 left-0 z-50 flex w-72 flex-col border-r border-slate-800/80 bg-[#0D1322] transition-transform md:static md:translate-x-0 ${
-            sidebarOpen ? "translate-x-0" : "-translate-x-full"
-          }`}
+          className={`fixed inset-y-0 left-0 z-50 flex w-72 flex-col border-r border-slate-800/80 bg-[#0D1322] transition-transform md:static md:translate-x-0 ${sidebarOpen ? "translate-x-0" : "-translate-x-full"
+            }`}
         >
           <div className="flex items-center gap-3 border-b border-slate-800/80 px-5 py-5">
             <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-blue-500 to-cyan-400 shadow-lg shadow-blue-500/30">
@@ -1358,17 +1531,15 @@ export function DashboardShell() {
 
           <nav className="flex-1 space-y-1 overflow-y-auto px-3 py-4">
             {navItems.map(({ label, icon: Icon, view: target }) => {
-              const active = view === target && !(target === "dashboard" && view !== "dashboard");
               const isActive = view === target;
               return (
                 <button
                   key={label}
                   onClick={() => navigate(target)}
-                  className={`flex w-full items-center justify-between rounded-xl px-3 py-2.5 text-sm transition ${
-                    isActive
-                      ? "bg-slate-800/90 text-white shadow-inner shadow-slate-700/60"
-                      : "text-slate-300 hover:bg-slate-800/70 hover:text-white"
-                  }`}
+                  className={`flex w-full items-center justify-between rounded-xl px-3 py-2.5 text-sm transition ${isActive
+                    ? "bg-slate-800/90 text-white shadow-inner shadow-slate-700/60"
+                    : "text-slate-300 hover:bg-slate-800/70 hover:text-white"
+                    }`}
                   aria-current={isActive ? "page" : undefined}
                 >
                   <span className="flex items-center gap-3">
@@ -1397,7 +1568,7 @@ export function DashboardShell() {
             </div>
             <div className="mt-3 flex gap-2 text-xs text-slate-300">
               <button
-                onClick={() => setView("dashboard")}
+                onClick={() => navigate("settings")}
                 className="flex-1 rounded-lg border border-slate-700 bg-slate-900/60 px-2 py-2 hover:border-slate-500"
               >
                 Account
@@ -1444,11 +1615,10 @@ export function DashboardShell() {
 
                 {/* Google status badge */}
                 <div
-                  className={`hidden items-center gap-2 rounded-full border px-3 py-1.5 text-xs md:flex ${
-                    googleConnected
-                      ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
-                      : "border-slate-700 bg-slate-900/60 text-slate-400"
-                  }`}
+                  className={`hidden items-center gap-2 rounded-full border px-3 py-1.5 text-xs md:flex ${googleConnected
+                    ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
+                    : "border-slate-700 bg-slate-900/60 text-slate-400"
+                    }`}
                 >
                   {googleConnected ? (
                     <CheckCircle2 className="h-3.5 w-3.5" />
@@ -1465,14 +1635,22 @@ export function DashboardShell() {
                   aria-label="Notifications"
                 >
                   <Bell className="h-4 w-4" />
-                  {dashData?.metrics &&
-                    (dashData.metrics.overdue > 0 || dashData.metrics.due_today > 0) && (
-                      <span className="absolute right-2 top-2 h-2 w-2 rounded-full bg-rose-500" />
-                    )}
+                  {!!session?.unread_notifications && (
+                    <span className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-rose-500 px-1 text-[9px] font-semibold text-white">
+                      {session.unread_notifications > 9 ? "9+" : session.unread_notifications}
+                    </span>
+                  )}
                 </button>
 
                 {/* Profile dropdown */}
-                <ProfileDropdown session={session} onLogout={handleLogout} />
+                <ProfileDropdown
+                  session={session}
+                  onLogout={handleLogout}
+                  onSettings={(tab) => {
+                    setSettingsTab(tab);
+                    navigate("settings");
+                  }}
+                />
               </div>
             </div>
           </header>

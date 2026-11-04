@@ -3,24 +3,85 @@
  * All requests include credentials (session cookie) automatically.
  */
 
-export const apiBase = (
+const configuredApiBase = (
   process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000"
 ).replace(/\/$/, "");
 
-type ApiError = { detail?: string };
+export function getApiBase(): string {
+  if (typeof window === "undefined") return configuredApiBase;
+
+  const apiUrl = new URL(configuredApiBase);
+  const frontendHost = window.location.hostname;
+  const isLoopbackAlias = (host: string) =>
+    host === "localhost" || host === "127.0.0.1";
+
+  if (isLoopbackAlias(frontendHost) && isLoopbackAlias(apiUrl.hostname)) {
+    apiUrl.hostname = frontendHost;
+  }
+  return apiUrl.toString().replace(/\/$/, "");
+}
+
+type ApiError = { detail?: unknown };
+
+function getApiErrorMessage(detail: unknown, status: number): string {
+  if (typeof detail === "string" && detail.trim()) return detail;
+
+  if (Array.isArray(detail)) {
+    const messages = detail.flatMap((entry) => {
+      if (!entry || typeof entry !== "object") return [];
+
+      const error = entry as { loc?: unknown; msg?: unknown };
+      if (typeof error.msg !== "string") return [];
+
+      const location = Array.isArray(error.loc)
+        ? error.loc.filter((part): part is string | number =>
+            typeof part === "string" || typeof part === "number",
+          )
+        : [];
+      const field = location.slice(1).join(".");
+      return [field ? `${field}: ${error.msg}` : error.msg];
+    });
+
+    if (messages.length > 0) return messages.join(" ");
+  }
+
+  return `Request failed (${status}).`;
+}
 
 export async function requestJson<T>(
   path: string,
   init?: RequestInit,
 ): Promise<T> {
-  const r = await fetch(`${apiBase}/api${path}`, {
-    ...init,
-    credentials: "include",
-    headers: { ...init?.headers },
-  });
-  const body = (await r.json()) as T & ApiError;
+  const headers = new Headers(init?.headers);
+  if (init?.body && typeof init.body === "string" && !headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
+  }
+
+  let r: Response;
+  try {
+    r = await fetch(`${getApiBase()}/api${path}`, {
+      ...init,
+      credentials: "include",
+      headers,
+    });
+  } catch (error) {
+    if (error instanceof TypeError) {
+      throw new Error(
+        `Could not connect to ClassMate AI at ${getApiBase()}. Check that the backend is running and allows this page's origin.`,
+      );
+    }
+    throw error;
+  }
+
+  const contentType = r.headers.get("content-type") ?? "";
+  const body = contentType.includes("application/json")
+    ? (await r.json()) as T & ApiError
+    : null;
   if (!r.ok) {
-    throw new Error(body.detail ?? `Request failed (${r.status}).`);
+    throw new Error(getApiErrorMessage(body?.detail, r.status));
+  }
+  if (body === null) {
+    throw new Error("The ClassMate AI API returned an unexpected response.");
   }
   return body;
 }
@@ -34,4 +95,3 @@ export function safeUrl(value: string | undefined | null): string | null {
     return null;
   }
 }
-

@@ -71,10 +71,12 @@ def get_google_profile(credentials: Credentials) -> dict[str, Any]:
 
 def save_google_login(
     db: Session,
+    user: User,
     profile: dict[str, Any],
     credentials: Credentials,
 ) -> User:
     email = profile.get("email")
+    email = email.strip().lower() if isinstance(email, str) else None
     google_sub = profile.get("id") or profile.get("sub")
     is_verified = (
         profile.get("verified_email") is True
@@ -88,18 +90,11 @@ def save_google_login(
     if not credentials.token:
         raise ValueError("Google did not return an access token.")
 
-    account = db.scalar(select(GoogleAccount).where(GoogleAccount.google_sub == google_sub))
-    email_owner = db.scalar(select(User).where(User.email == email))
-    if account is not None and email_owner is not None and email_owner.id != account.user_id:
-        raise ValueError("This Google email is already associated with a different user.")
-    user = db.get(User, account.user_id) if account else email_owner
-    if user is None:
-        user = User(full_name=profile.get("name") or email, email=email)
-        db.add(user)
-        db.flush()
-    elif user.email != email:
-        user.email = email
+    if user.email.strip().lower() != email:
+        raise ValueError("The Google account must match the registered Classroom Email.")
+    user.email = email
 
+    account = db.scalar(select(GoogleAccount).where(GoogleAccount.google_sub == google_sub))
     if account is not None and account.user_id != user.id:
         raise ValueError("The Google account is already linked to another user.")
 
@@ -118,6 +113,7 @@ def save_google_login(
         db.add(account)
 
     account.google_email = email
+    user.is_verified = True
     account.encrypted_access_token = encrypt_google_token(credentials.token or "")
     account.encrypted_refresh_token = (
         encrypt_google_token(credentials.refresh_token)

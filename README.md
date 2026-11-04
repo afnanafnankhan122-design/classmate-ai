@@ -163,7 +163,9 @@ classmate-ai/
    NEXT_PUBLIC_API_URL=http://localhost:8000
    ```
 
-4. **Start the Next.js development server**:
+   For local development, the API client matches `localhost` and `127.0.0.1` loopback hosts to the browser's hostname, and the backend allows only those two explicit loopback aliases (plus the configured frontend origin). This keeps credentialed session cookies same-site when the frontend is opened using either host. Restart the backend after changing its CORS configuration.
+
+   4. **Start the Next.js development server**:
 
    ```powershell
    npm run dev
@@ -203,6 +205,16 @@ cd frontend
 npx tsc --noEmit
 ```
 
+## Student Account Authentication
+
+ClassMate AI account passwords are separate from Google OAuth. Students must sign in to their ClassMate AI account before starting the Google Classroom connection. The OAuth callback only links a verified Google identity when its email exactly matches the signed-in student's Classroom Email; it does not create or sign in to a ClassMate AI account.
+
+Session cookies are HTTP-only, SameSite=Lax, and Secure in production. Non-remembered sessions expire after eight hours; remembered sessions expire after fourteen days. Password changes and resets invalidate prior sessions through the user's `auth_version`. Apply database migrations with `alembic upgrade head` before starting the updated backend; existing unexpired signed sessions are upgraded on first use, and previously issued password reset tokens are invalidated.
+
+Email ownership is not inferred from a Gmail address or from registration. New password accounts remain marked unverified; a matching verified Google identity marks the address verified when Classroom is connected. This project currently has no email delivery provider configured. Consequently, password recovery requests return the same generic response for all addresses but do not create or deliver reset tokens. To enable email-based verification and recovery, configure an email provider and implement a delivery adapter that sends one-time links without returning reset tokens from API responses or logs. Do not treat the current forgot-password screen as a working recovery channel until that setup is complete.
+
+Authentication throttling is currently process-local. Deployments with multiple backend workers or instances should move the limiter to a shared store such as Redis before exposing the service publicly.
+
 ---
 
 ## Security & Privacy Considerations
@@ -210,6 +222,8 @@ npx tsc --noEmit
 - **Credential Isolation**: Google OAuth client secrets and encryption keys are strictly backend-held and never exposed to the client.
 - **Token Encryption**: Access and refresh tokens are encrypted at rest in SQLite using Fernet encryption (`cryptography`).
 - **Read-Only Scopes**: Only `classroom.courses.readonly`, `classroom.coursework.me.readonly`, and student profile identity scopes are requested.
+- **Account Separation**: Google OAuth can only link to an authenticated ClassMate AI account with a matching verified email.
+- **Session Protection**: Password updates invalidate older signed sessions; state-changing browser requests are checked against configured origins.
 - **Git Protections**: All `.env`, `.env.*`, `*.db`, virtual environments, and build artifacts are strictly excluded by `.gitignore`.
 
 ---

@@ -106,6 +106,33 @@ def _google_api_error(
     )
 
 
+def _sync_if_requested(
+    db: Session,
+    user: User,
+    account: GoogleAccount | None,
+    auto_sync: bool,
+) -> None:
+    if account is None or (account.last_synced_at is not None and not auto_sync):
+        return
+
+    credentials = _get_credentials(db, account)
+    try:
+        sync_classroom_data(db, user.id, credentials)
+    except HttpError as exc:
+        raise _google_api_error(exc, db, account) from exc
+    except GoogleAuthError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail="Google authentication failed while syncing Classroom.",
+        ) from exc
+    except ZoneInfoNotFoundError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail="Google returned an unsupported course timezone. Sync was not completed.",
+        ) from exc
+    db.refresh(account)
+
+
 @router.post("/sync")
 def sync_classrooms(
     db: Session = Depends(get_db),
@@ -137,13 +164,7 @@ def list_classroom_courses(
     user: User = Depends(get_current_user),
 ) -> dict:
     account = get_user_google_account(db, user.id)
-    if account is not None and (account.last_synced_at is None or auto_sync):
-        try:
-            credentials = _get_credentials(db, account)
-            sync_classroom_data(db, user.id, credentials)
-            db.refresh(account)
-        except Exception:
-            pass
+    _sync_if_requested(db, user, account, auto_sync)
 
     courses = db.scalars(
         select(Course)
@@ -174,13 +195,7 @@ def list_classroom_assignments(
     user: User = Depends(get_current_user),
 ) -> dict:
     account = get_user_google_account(db, user.id)
-    if account is not None and (account.last_synced_at is None or auto_sync):
-        try:
-            credentials = _get_credentials(db, account)
-            sync_classroom_data(db, user.id, credentials)
-            db.refresh(account)
-        except Exception:
-            pass
+    _sync_if_requested(db, user, account, auto_sync)
 
     assignments = db.scalars(
         select(Assignment)

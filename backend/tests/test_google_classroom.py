@@ -4,6 +4,7 @@ from unittest.mock import MagicMock, patch
 from zoneinfo import ZoneInfo
 
 from cryptography.fernet import Fernet
+from google.oauth2.credentials import Credentials
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
@@ -19,7 +20,7 @@ from app.services.google_classroom import (
     classroom_assignment_dict,
     sync_classroom_data,
 )
-from app.services.google_oauth import get_classroom_credentials
+from app.services.google_oauth import get_classroom_credentials, save_google_login
 from app.api.routes.dashboard import _is_due_today, _is_overdue
 
 
@@ -323,6 +324,44 @@ class GoogleClassroomSyncTests(unittest.TestCase):
         # MUST be overdue
         now_utc = datetime.now(timezone.utc)
         self.assertTrue(_is_overdue(assignment, now_utc))
+
+    def test_google_link_rejects_an_identity_that_does_not_match_the_student(self) -> None:
+        profile = {
+            "id": "google-sub",
+            "email": "someone-else@example.test",
+            "verified_email": True,
+            "name": "Someone Else",
+        }
+
+        with self.assertRaisesRegex(ValueError, "must match the registered"):
+            save_google_login(
+                self.db,
+                self.user,
+                profile,
+                Credentials(token="temporary-access-token"),
+            )
+
+        self.assertEqual(self.db.query(User).count(), 1)
+        self.assertEqual(self.db.query(GoogleAccount).count(), 0)
+
+    def test_google_link_verifies_a_matching_provider_email(self) -> None:
+        profile = {
+            "id": "google-sub",
+            "email": self.user.email,
+            "verified_email": True,
+            "name": self.user.full_name,
+        }
+
+        with patch.object(settings, "google_token_encryption_key", self.fernet_key):
+            linked_user = save_google_login(
+                self.db,
+                self.user,
+                profile,
+                Credentials(token="temporary-access-token"),
+            )
+
+        self.assertTrue(linked_user.is_verified)
+        self.assertEqual(self.db.query(GoogleAccount).count(), 1)
 
 
 if __name__ == "__main__":

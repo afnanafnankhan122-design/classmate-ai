@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.core.config import settings
 from app.database.dependencies import get_db
+from app.api.routes.auth import get_current_user
 from app.models.approval import Approval
 from app.models.assignment import Assignment
 from app.models.course import Course
@@ -354,6 +355,15 @@ def _compute_dashboard_data(user: User, db: Session) -> dict:
         "google_connected": account is not None,
         "google_email": account.google_email if account else None,
         "last_synced_at": account.last_synced_at.isoformat() if account and account.last_synced_at else None,
+        "student": {
+            "id": user.id,
+            "name": user.full_name,
+            "email": user.email,
+            "roll_number": user.roll_number,
+            "department": user.department,
+            "semester": user.semester,
+            "avatar_url": user.avatar_url,
+        },
         "metrics": {
             "total_assignments": total_count,
             "pending_assignments": pending_count,
@@ -374,62 +384,24 @@ def _compute_dashboard_data(user: User, db: Session) -> dict:
 
 @router.get("/dashboard/overview")
 def get_dashboard_overview(
-    request: Request,
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ) -> dict:
-    user_id = request.session.get("user_id")
-    user = db.get(User, user_id) if isinstance(user_id, int) else None
-    if user is None:
-        user = db.scalar(select(User).order_by(User.id.desc()))
-        if user is None:
-            return DEMO_DATA
-
-    account = get_user_google_account(db, user.id)
-    if account is None:
-        return DEMO_DATA
-
+    """Return live dashboard overview data for the authenticated student."""
     return _compute_dashboard_data(user, db)
 
 
 @router.get("/dashboard/stats")
 def get_dashboard_stats(
-    request: Request,
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ) -> dict:
-    user_id = request.session.get("user_id")
-    user = db.get(User, user_id) if isinstance(user_id, int) else None
-    if user is None:
-        user = db.scalar(select(User).order_by(User.id.desc()))
-        if user is None:
-            return {
-                "is_demo": True,
-                "total_assignments": 38,
-                "pending_assignments": 12,
-                "due_today": 4,
-                "overdue": 3,
-                "completed": 18,
-                "awaiting_approval": 7,
-                "active_courses": 6,
-                "stats": DEMO_DATA["stats"],
-            }
-
-    account = get_user_google_account(db, user.id)
-    if account is None:
-        return {
-            "is_demo": True,
-            "total_assignments": 38,
-            "pending_assignments": 12,
-            "due_today": 4,
-            "overdue": 3,
-            "completed": 18,
-            "awaiting_approval": 7,
-            "active_courses": 6,
-            "stats": DEMO_DATA["stats"],
-        }
-
+    """Return headline metrics for the authenticated student."""
     data = _compute_dashboard_data(user, db)
     return {
         "is_demo": False,
+        "authenticated": True,
+        "google_connected": data["google_connected"],
         **data["metrics"],
         "stats": data["stats"],
     }

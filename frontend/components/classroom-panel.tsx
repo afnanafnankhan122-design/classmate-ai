@@ -19,6 +19,7 @@ import {
   RefreshCw,
   FileVideo,
 } from "lucide-react";
+import { getApiBase, requestJson } from "@/lib/api";
 
 type UserInfo = {
   full_name: string;
@@ -74,30 +75,6 @@ type ClassroomAssignment = {
   submission_status: string;
   source: "google_classroom";
 };
-
-type ApiError = {
-  detail?: string;
-};
-
-const apiBase = (process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000").replace(
-  /\/$/,
-  "",
-);
-
-async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${apiBase}/api${path}`, {
-    ...init,
-    credentials: "include",
-    headers: {
-      ...init?.headers,
-    },
-  });
-  const body = (await response.json()) as T & ApiError;
-  if (!response.ok) {
-    throw new Error(body.detail ?? `Request failed (${response.status}).`);
-  }
-  return body;
-}
 
 function safeHttpUrl(value: string | undefined): string | null {
   if (!value) return null;
@@ -227,6 +204,7 @@ export function ClassroomPanel({
   onSessionChange: (session: SessionInfo) => void;
   onDashboardRefresh?: () => void;
 }) {
+  const apiBase = getApiBase();
   const [session, setSession] = useState<SessionInfo | null>(null);
   const [courses, setCourses] = useState<CourseInfo[]>([]);
   const [assignments, setAssignments] = useState<ClassroomAssignment[]>([]);
