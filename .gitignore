@@ -38,6 +38,7 @@ service_account*.json
 *.sqlite3-journal
 classmate_ai.db
 backend/classmate_ai.db
+backend/private_receipts/
 
 # Python & Virtual Environments
 __pycache__/

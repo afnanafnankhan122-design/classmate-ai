@@ -60,8 +60,8 @@ export function ResetPasswordView({
       setError("Please provide the recovery token from your email.");
       return;
     }
-    if (strength.score < 3) {
-      setError("Please choose a stronger password (at least 8 characters, uppercase, and numbers/symbols).");
+    if (strength.score < 4) {
+      setError("Use at least 8 characters with lowercase, uppercase, and a digit or special character.");
       return;
     }
     if (newPassword !== confirmPassword) {
@@ -90,7 +90,7 @@ export function ResetPasswordView({
   return (
     <AuthCardShell
       title="Set New Password"
-      subtitle="Enter your recovery token and choose a new, strong password."
+      subtitle="Use the one-time link in your recovery email and choose a new, strong password."
       footer={
         <button
           type="button"
@@ -123,7 +123,7 @@ export function ResetPasswordView({
           </button>
         </div>
       ) : (
-        <form onSubmit={handleSubmit} className="space-y-4">
+        <form onSubmit={handleSubmit} className="space-y-4" aria-busy={loading}>
           {error && (
             <div className="flex items-start gap-2 rounded-xl border border-rose-500/30 bg-rose-500/10 p-3 text-xs text-rose-300">
               <AlertCircle className="h-4 w-4 shrink-0 mt-0.5 text-rose-400" />
@@ -149,6 +149,9 @@ export function ResetPasswordView({
                 className="w-full rounded-xl border border-slate-700/80 bg-slate-900/70 pl-9 pr-3 py-2 text-sm text-white font-mono placeholder-slate-500 transition focus:border-cyan-400 focus:outline-none focus:ring-1 focus:ring-cyan-400"
               />
             </div>
+            <p className="mt-1 text-[11px] text-slate-400">
+              Reset links are single-use and expire after 30 minutes. If this link is expired or invalid, request another from Sign In.
+            </p>
           </div>
 
           {/* New Password */}

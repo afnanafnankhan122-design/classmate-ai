@@ -278,6 +278,17 @@ def _compute_dashboard_data(user: User, db: Session) -> dict:
             else "Assigned"
         )
 
+        ai_status = {
+            "pending": "Detected - waiting until due date",
+            "processing": "Processing",
+            "failed": "Failed",
+            "overdue": "Overdue - not auto-processed",
+            "ready_for_review": "Draft ready for review",
+            "editing": "Editing",
+            "approved": "Approved",
+            "submitted": "Submitted",
+        }.get(a.processing_status, "Detected")
+
         rows.append({
             "id": a.id,
             "title": a.title,
@@ -285,10 +296,11 @@ def _compute_dashboard_data(user: User, db: Session) -> dict:
             "teacher": a.course.course_section or "Google Classroom",
             "deadline": deadline_str,
             "status": status_label,
-            "ai": "Ready for AI review",
+            "ai": ai_status,
             "submission": submission_display,
             "alternate_link": a.alternate_link,
             "max_points": a.max_points,
+            "processing_status": a.processing_status,
         })
 
     # Real upcoming deadlines (unsubmitted assignments sorted by deadline)

@@ -11,6 +11,11 @@ class Notification(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
+    assignment_id: Mapped[int | None] = mapped_column(
+        ForeignKey("assignments.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     message: Mapped[str] = mapped_column(String(1000), nullable=False)
     category: Mapped[str] = mapped_column(String(50), default="system", index=True)
@@ -19,4 +24,3 @@ class Notification(Base):
     created_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(UTC), index=True)
 
     user: Mapped["User"] = relationship(back_populates="notifications")
-

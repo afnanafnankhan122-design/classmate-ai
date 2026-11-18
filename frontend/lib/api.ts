@@ -3,24 +3,6 @@
  * All requests include credentials (session cookie) automatically.
  */
 
-const configuredApiBase = (
-  process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000"
-).replace(/\/$/, "");
-
-export function getApiBase(): string {
-  if (typeof window === "undefined") return configuredApiBase;
-
-  const apiUrl = new URL(configuredApiBase);
-  const frontendHost = window.location.hostname;
-  const isLoopbackAlias = (host: string) =>
-    host === "localhost" || host === "127.0.0.1";
-
-  if (isLoopbackAlias(frontendHost) && isLoopbackAlias(apiUrl.hostname)) {
-    apiUrl.hostname = frontendHost;
-  }
-  return apiUrl.toString().replace(/\/$/, "");
-}
-
 type ApiError = { detail?: unknown };
 
 function getApiErrorMessage(detail: unknown, status: number): string {
@@ -59,7 +41,7 @@ export async function requestJson<T>(
 
   let r: Response;
   try {
-    r = await fetch(`${getApiBase()}/api${path}`, {
+    r = await fetch(`/api${path}`, {
       ...init,
       credentials: "include",
       headers,
@@ -67,7 +49,7 @@ export async function requestJson<T>(
   } catch (error) {
     if (error instanceof TypeError) {
       throw new Error(
-        `Could not connect to ClassMate AI at ${getApiBase()}. Check that the backend is running and allows this page's origin.`,
+        "Could not connect to ClassMate AI. Check that the frontend and backend are running.",
       );
     }
     throw error;

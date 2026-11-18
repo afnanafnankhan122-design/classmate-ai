@@ -12,6 +12,7 @@ from app.database.dependencies import get_db
 from app.models.assignment import Assignment
 from app.models.notification import Notification
 from app.models.user import User
+from app.services.entitlements import get_license_status
 
 router = APIRouter(prefix="/notifications", tags=["notifications"])
 
@@ -25,40 +26,39 @@ def list_notifications(
     now_utc = datetime.now(timezone.utc)
     app_tz = ZoneInfo(settings.app_timezone)
 
-    # Check for assignments due today to auto-generate timely reminder if not already generated today
-    today_assignments = db.scalars(
-        select(Assignment)
-        .where(
-            Assignment.user_id == user.id,
-            Assignment.is_demo.is_(False),
-            Assignment.submission_status.in_(["assigned", "unsubmitted", "not_started"]),
-            Assignment.due_date.is_not(None),
-        )
-    ).all()
-
-    for a in today_assignments:
-        due_utc = a.due_date if a.due_date.tzinfo else a.due_date.replace(tzinfo=timezone.utc)
-        due_local = due_utc.astimezone(app_tz)
-        if due_local.date() == datetime.now(app_tz).date():
-            # Check if reminder already exists
-            existing = db.scalar(
-                select(Notification).where(
-                    Notification.user_id == user.id,
-                    Notification.category == "due_today",
-                    Notification.title.ilike(f"%{a.title}%"),
-                )
+    if get_license_status(db, user).active:
+        today_assignments = db.scalars(
+            select(Assignment)
+            .where(
+                Assignment.user_id == user.id,
+                Assignment.is_demo.is_(False),
+                Assignment.submission_status.in_(["assigned", "unsubmitted", "not_started"]),
+                Assignment.due_date.is_not(None),
             )
-            if not existing:
-                notif = Notification(
-                    user_id=user.id,
-                    title=f"Due Today: {a.title}",
-                    message=f"Assignment is due today at {a.due_time or due_local.strftime('%I:%M %p')} PKT.",
-                    category="due_today",
-                    link=a.alternate_link,
-                    is_read=False,
+        ).all()
+
+        for a in today_assignments:
+            due_utc = a.due_date if a.due_date.tzinfo else a.due_date.replace(tzinfo=timezone.utc)
+            due_local = due_utc.astimezone(app_tz)
+            if due_local.date() == datetime.now(app_tz).date():
+                existing = db.scalar(
+                    select(Notification).where(
+                        Notification.user_id == user.id,
+                        Notification.category == "due_today",
+                        Notification.title.ilike(f"%{a.title}%"),
+                    )
                 )
-                db.add(notif)
-                db.commit()
+                if not existing:
+                    notif = Notification(
+                        user_id=user.id,
+                        title=f"Due Today: {a.title}",
+                        message=f"Assignment is due today at {a.due_time or due_local.strftime('%I:%M %p')} PKT.",
+                        category="due_today",
+                        link=a.alternate_link,
+                        is_read=False,
+                    )
+                    db.add(notif)
+                    db.commit()
 
     # Fetch stored notifications
     notifications = db.scalars(
@@ -74,6 +74,7 @@ def list_notifications(
         "notifications": [
             {
                 "id": n.id,
+                "assignment_id": n.assignment_id,
                 "title": n.title,
                 "message": n.message,
                 "category": n.category,
@@ -116,4 +117,3 @@ def mark_all_notifications_read(
     )
     db.commit()
     return {"status": "ok"}
-

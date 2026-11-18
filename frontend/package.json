@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build --webpack",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "test:legal": "node --test tests/legal-pages.test.mjs"
   },
   "dependencies": {
     "clsx": "^2.1.1",
@@ -17,7 +18,7 @@
     "recharts": "^3.10.1"
   },
   "devDependencies": {
-    "@tailwindcss/turbopack": "^4",
+    "@tailwindcss/postcss": "^4.3.3",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",

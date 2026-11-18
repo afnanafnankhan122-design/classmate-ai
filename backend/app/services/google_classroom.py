@@ -13,6 +13,7 @@ from app.core.config import settings
 from app.models.assignment import Assignment
 from app.models.course import Course
 from app.models.google_account import GoogleAccount
+from app.services.google_oauth import is_google_insufficient_permissions
 
 logger = logging.getLogger(__name__)
 
@@ -139,7 +140,7 @@ def _fetch_classroom_data(
     api_success = False
     last_http_error: HttpError | None = None
 
-    # Query student courses
+    # This application syncs the requesting student's own courses only.
     try:
         student_courses = _pages(
             lambda page_token: classroom.courses().list(
@@ -157,45 +158,6 @@ def _fetch_classroom_data(
     except HttpError as exc:
         last_http_error = exc
         logger.warning("Error fetching student courses: %s", exc)
-
-    # Query teacher courses (in case the user created test courses or is an instructor)
-    try:
-        teacher_courses = _pages(
-            lambda page_token: classroom.courses().list(
-                teacherId="me",
-                courseStates=["ACTIVE"],
-                pageSize=100,
-                **({"pageToken": page_token} if page_token else {}),
-            ),
-            "courses",
-        )
-        api_success = True
-        for c in teacher_courses:
-            if c.get("id") and c["id"] not in courses_by_id:
-                courses_by_id[c["id"]] = c
-    except HttpError as exc:
-        if last_http_error is None:
-            last_http_error = exc
-        logger.warning("Error fetching teacher courses: %s", exc)
-
-    # Fallback to general list if specific filters returned nothing
-    if not courses_by_id:
-        try:
-            all_courses = _pages(
-                lambda page_token: classroom.courses().list(
-                    pageSize=100,
-                    **({"pageToken": page_token} if page_token else {}),
-                ),
-                "courses",
-            )
-            api_success = True
-            for c in all_courses:
-                if c.get("id"):
-                    courses_by_id[c["id"]] = c
-        except HttpError as exc:
-            if last_http_error is None:
-                last_http_error = exc
-            logger.warning("Error in general courses list: %s", exc)
 
     # If NO API call succeeded and an HttpError was raised, raise it!
     # This prevents falsely claiming sync succeeded when API was disabled or unauthorized.
@@ -225,6 +187,8 @@ def _fetch_classroom_data(
             )
             coursework_by_course.extend((course_id, assignment) for assignment in assignments)
         except HttpError as exc:
+            if is_google_insufficient_permissions(exc):
+                raise
             logger.warning("Error fetching coursework for course %s: %s", course_id, exc)
             continue
 
@@ -248,6 +212,8 @@ def _fetch_classroom_data(
                 if cw_id:
                     submission_states[cw_id] = _map_submission_state(sub.get("state"))
         except HttpError as exc:
+            if is_google_insufficient_permissions(exc):
+                raise
             logger.warning("Error fetching submissions for course %s: %s", course_id, exc)
 
     return courses, coursework_by_course, submission_states
@@ -401,5 +367,6 @@ def classroom_assignment_dict(assignment: Assignment) -> dict[str, Any]:
         "max_points": assignment.max_points,
         "attachments": assignment.attachments or [],
         "submission_status": assignment.submission_status,
+        "processing_status": assignment.processing_status,
         "source": "google_classroom",
     }

@@ -1,5 +1,6 @@
 "use client";
 
+import { useRouter } from "next/navigation";
 import {
   startTransition,
   useCallback,
@@ -17,6 +18,7 @@ import {
   CheckCircle2,
   ChevronRight,
   CircleDashed,
+  CreditCard,
   Clock3,
   ExternalLink,
   FileText,
@@ -48,6 +50,8 @@ import { LoginView } from "@/components/auth/login-view";
 import { RegisterView } from "@/components/auth/register-view";
 import { ResetPasswordView } from "@/components/auth/reset-password-view";
 import { AccountSettingsView } from "@/components/settings/account-settings-view";
+import { LicensingView } from "@/components/licensing-view";
+import { AssignmentWorkspace } from "@/components/assignment-workspace";
 import type { AccountSettingsTab } from "@/components/settings/account-settings-view";
 import { requestJson, safeUrl } from "@/lib/api";
 
@@ -65,6 +69,7 @@ type View =
   | "pdf-documents"
   | "submission-history"
   | "notifications"
+  | "payments"
   | "settings";
 
 type AuthPage = "login" | "register" | "forgot-password" | "reset-password";
@@ -75,6 +80,19 @@ type AssignmentFilter =
   | "due-today"
   | "overdue"
   | "completed";
+
+const googleAuthMessages: Record<string, string> = {
+  connected: "Google account connected successfully.",
+  scopes_required: "Google's token grant is missing one or more exact API scopes. Settings shows the missing scope names; similarly worded Google permission summaries may refer to a different Classroom API scope.",
+  denied: "Google sign-in was cancelled.",
+  email_mismatch: "Choose the Google account that uses your ClassMate AI email address.",
+  token_rejected: "Google rejected the authorization token. Restart sign-in and approve access again.",
+  account_exists: "An account already exists for this email. Sign in to it first, then connect Google from Account Settings.",
+  terms_required: "To create an account with Google, return to registration, agree to the Terms of Use, and acknowledge the Privacy Policy.",
+  device_limit: "You have reached your maximum of 2 registered devices. Sign in from an existing device and revoke an old session before registering another device.",
+  device_revoked: "This device session was revoked or expired while Google sign-in was in progress. Sign in again to continue.",
+  error: "Google sign-in failed. Please try again.",
+};
 
 type OverviewStat = {
   label: string;
@@ -92,6 +110,7 @@ type AssignmentRow = {
   status: string;
   ai: string;
   submission: string;
+  processing_status?: string;
   alternate_link?: string | null;
   max_points?: number | null;
 };
@@ -126,6 +145,8 @@ type SessionInfo = {
   authenticated: boolean;
   google_connected: boolean;
   google_oauth_configured: boolean;
+  google_missing_scopes?: string[];
+  google_reconnect_required?: boolean;
   unread_notifications?: number;
   user?: {
     id?: number;
@@ -181,6 +202,7 @@ const navItems: { label: string; icon: React.ElementType; view: View }[] = [
   { label: "PDF Documents", icon: FileText, view: "pdf-documents" },
   { label: "Submission History", icon: CheckCircle2, view: "submission-history" },
   { label: "Notifications", icon: Bell, view: "notifications" },
+  { label: "Payments & License", icon: CreditCard, view: "payments" },
   { label: "Settings", icon: ShieldCheck, view: "settings" },
 ];
 
@@ -249,10 +271,12 @@ function AssignmentTable({
   rows,
   loading,
   emptyMessage,
+  onEdit,
 }: {
   rows: AssignmentRow[];
   loading: boolean;
   emptyMessage: string;
+  onEdit?: (assignmentId: number) => void;
 }) {
   if (loading)
     return (
@@ -272,6 +296,7 @@ function AssignmentTable({
             <th className="pb-3 pr-4 font-medium">Status</th>
             <th className="pb-3 pr-4 font-medium">AI</th>
             <th className="pb-3 font-medium">Submission</th>
+            {onEdit && <th className="pb-3 pl-4 font-medium">Workspace</th>}
           </tr>
         </thead>
         <tbody>
@@ -315,6 +340,16 @@ function AssignmentTable({
                 </td>
                 <td className="py-3 pr-4 text-slate-300">{a.ai}</td>
                 <td className="py-3 text-slate-300">{a.submission}</td>
+                {onEdit && (
+                  <td className="py-3 pl-4">
+                    <button
+                      onClick={() => onEdit(a.id)}
+                      className="rounded-lg border border-blue-500/40 px-2.5 py-1.5 text-xs text-blue-200 transition hover:border-blue-400 hover:bg-blue-500/10"
+                    >
+                      Open editor
+                    </button>
+                  </td>
+                )}
               </tr>
             );
           })}
@@ -350,10 +385,12 @@ function AssignmentsView({
   allRows,
   loading,
   initialFilter,
+  onEdit,
 }: {
   allRows: AssignmentRow[];
   loading: boolean;
   initialFilter: AssignmentFilter;
+  onEdit: (assignmentId: number) => void;
 }) {
   const [filter, setFilter] = useState<AssignmentFilter>(initialFilter);
 
@@ -406,6 +443,7 @@ function AssignmentsView({
       <AssignmentTable
         rows={filtered}
         loading={loading}
+        onEdit={onEdit}
         emptyMessage={
           filter === "all"
             ? "No assignments found. Sync your Google Classroom to load coursework."
@@ -555,6 +593,7 @@ function SubmissionHistoryView({ rows, loading }: { rows: AssignmentRow[]; loadi
 
 type NotificationItem = {
   id: number;
+  assignment_id: number | null;
   title: string;
   message: string;
   category: string;
@@ -562,7 +601,13 @@ type NotificationItem = {
   created_at: string | null;
 };
 
-function NotificationsView({ onRefresh }: { onRefresh: () => void }) {
+function NotificationsView({
+  onRefresh,
+  onOpenAssignment,
+}: {
+  onRefresh: () => void;
+  onOpenAssignment: (assignmentId: number) => void;
+}) {
   const [items, setItems] = useState<NotificationItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -652,6 +697,15 @@ function NotificationsView({ onRefresh }: { onRefresh: () => void }) {
                 <p className="mt-2 text-xs text-slate-500">
                   {item.category} · {item.created_at ? new Date(item.created_at).toLocaleString() : "Recently"}
                 </p>
+                {item.assignment_id && (
+                  <button
+                    type="button"
+                    onClick={() => onOpenAssignment(item.assignment_id!)}
+                    className="mt-2 rounded-lg border border-blue-500/40 px-2.5 py-1.5 text-xs text-blue-200 hover:bg-blue-500/10"
+                  >
+                    Review assignment
+                  </button>
+                )}
               </div>
               {!item.is_read && (
                 <button
@@ -666,14 +720,6 @@ function NotificationsView({ onRefresh }: { onRefresh: () => void }) {
           ))}
         </div>
       )}
-    </PageShell>
-  );
-}
-
-function PlaceholderView({ title, description }: { title: string; description: string }) {
-  return (
-    <PageShell title={title}>
-      <EmptyState message={description} />
     </PageShell>
   );
 }
@@ -965,15 +1011,26 @@ function ProfileDropdown({
 // ─── Main shell ───────────────────────────────────────────────────────────────
 
 export function DashboardShell() {
+  const router = useRouter();
   const [view, setView] = useState<View>("dashboard");
+  const [workspaceAssignmentId, setWorkspaceAssignmentId] = useState<number | null>(null);
   const [assignmentFilter, setAssignmentFilter] = useState<AssignmentFilter>("all");
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<AccountSettingsTab>("profile");
-  const [authPage, setAuthPage] = useState<AuthPage | null>(null);
+  const [resetToken, setResetToken] = useState(() => {
+    if (typeof window === "undefined") return "";
+    return new URLSearchParams(window.location.hash.slice(1)).get("reset_token") ?? "";
+  });
+  const resetLinkPending = useRef(Boolean(resetToken));
+  const [authPage, setAuthPage] = useState<AuthPage | null>(() =>
+    resetToken ? "reset-password" : null,
+  );
   const [authLoading, setAuthLoading] = useState(true);
-  const [authNotice, setAuthNotice] = useState<string | null>(null);
-  const [resetToken, setResetToken] = useState("");
-
+  const [authNotice, setAuthNotice] = useState<string | null>(() => {
+    if (typeof window === "undefined") return null;
+    const result = new URLSearchParams(window.location.search).get("google");
+    return result ? googleAuthMessages[result] ?? "Google sign-in could not be completed." : null;
+  });
   // Session / auth
   const [session, setSession] = useState<SessionInfo | null>(null);
 
@@ -1003,19 +1060,27 @@ export function DashboardShell() {
   // ── Fetch session ──
   const fetchSession = useCallback(async () => {
     try {
-      const s = await requestJson<SessionInfo>("/auth/me");
+      const s = await requestJson<SessionInfo>("/auth/me", {
+        signal: AbortSignal.timeout(15000),
+      });
       setSession(s);
       if (s.authenticated) {
-        setAuthPage(null);
+        if (!resetLinkPending.current) setAuthPage(null);
       } else {
-        setAuthPage("login");
+        if (!resetLinkPending.current) setAuthPage("login");
         setDashData(null);
       }
       return s;
     } catch (err) {
       setSession(null);
-      setAuthPage("login");
-      setAuthNotice(err instanceof Error ? err.message : "Could not verify your session.");
+      if (!resetLinkPending.current) setAuthPage("login");
+      setAuthNotice(
+        err instanceof DOMException && err.name === "TimeoutError"
+          ? "Session check timed out. Check that ClassMate AI is reachable on this network, then sign in again."
+          : err instanceof Error
+            ? err.message
+            : "Could not verify your session.",
+      );
       return null;
     } finally {
       setAuthLoading(false);
@@ -1029,6 +1094,20 @@ export function DashboardShell() {
       void fetchDashboard();
     }
   }, [fetchDashboard, fetchSession]);
+
+  const handleGoogleSignIn = useCallback((acceptCurrentLegalVersions = false) => {
+    window.location.replace(
+      acceptCurrentLegalVersions
+        ? "/api/auth/google/start?terms_accepted=true"
+        : "/api/auth/google/start",
+    );
+  }, []);
+
+  const handleNavigateLogin = useCallback(() => {
+    resetLinkPending.current = false;
+    setResetToken("");
+    setAuthPage("login");
+  }, []);
 
   // ── Fetch courses for classrooms view ──
   const fetchCourses = useCallback(async () => {
@@ -1044,6 +1123,29 @@ export function DashboardShell() {
   }, []);
 
   useEffect(() => {
+    const resetLinkToken = new URLSearchParams(
+      window.location.hash.slice(1),
+    ).get("reset_token");
+    if (resetLinkToken) {
+      resetLinkPending.current = true;
+      window.history.replaceState(
+        {},
+        "",
+        `${window.location.pathname}${window.location.search}`,
+      );
+    }
+
+    const googleResult = new URLSearchParams(window.location.search).get("google");
+    if (googleResult) {
+      const callbackUrl = new URL(window.location.href);
+      callbackUrl.searchParams.delete("google");
+      window.history.replaceState(
+        {},
+        "",
+        `${callbackUrl.pathname}${callbackUrl.search}${callbackUrl.hash}`,
+      );
+    }
+
     const timer = window.setTimeout(() => {
       void fetchSession().then((currentSession) => {
         if (currentSession?.authenticated) {
@@ -1087,6 +1189,10 @@ export function DashboardShell() {
     },
     [],
   );
+  const openAssignmentWorkspace = useCallback((assignmentId: number) => {
+    setWorkspaceAssignmentId(assignmentId);
+    navigate("ai-workspace");
+  }, [navigate]);
 
   // ── Stat card click handler ──
   function handleStatClick(label: string) {
@@ -1129,6 +1235,7 @@ export function DashboardShell() {
           allRows={allRows}
           loading={dashLoading}
           initialFilter={assignmentFilter}
+          onEdit={openAssignmentWorkspace}
         />
       );
     }
@@ -1148,7 +1255,15 @@ export function DashboardShell() {
       return <SubmissionHistoryView rows={allRows} loading={dashLoading} />;
     }
     if (view === "notifications") {
-      return <NotificationsView onRefresh={() => void fetchSession()} />;
+      return (
+        <NotificationsView
+          onRefresh={() => void fetchSession()}
+          onOpenAssignment={openAssignmentWorkspace}
+        />
+      );
+    }
+    if (view === "payments") {
+      return <LicensingView />;
     }
     if (view === "settings" && student) {
       return (
@@ -1166,6 +1281,7 @@ export function DashboardShell() {
           }}
           initialTab={settingsTab}
           googleConnected={googleConnected}
+          googleMissingScopes={session?.google_missing_scopes ?? []}
           googleEmail={session?.google_email}
           lastSyncedAt={session?.last_synced_at}
           onProfileUpdated={() => {
@@ -1177,20 +1293,30 @@ export function DashboardShell() {
       );
     }
     if (view === "ai-workspace") {
-      return (
-        <PlaceholderView
-          title="AI Workspace"
-          description="AI-powered assignment generation and review will be available here."
-        />
-      );
+      return <AssignmentWorkspace
+        assignments={allRows}
+        initialAssignmentId={workspaceAssignmentId}
+        onSelectAssignment={setWorkspaceAssignmentId}
+        student={student ? {
+          full_name: student.full_name,
+          roll_number: student.roll_number,
+          department: student.department,
+          semester: student.semester,
+        } : null}
+      />;
     }
     if (view === "pdf-documents") {
-      return (
-        <PlaceholderView
-          title="PDF Documents"
-          description="Generated and uploaded PDF documents will appear here."
-        />
-      );
+      return <AssignmentWorkspace
+        assignments={allRows}
+        initialAssignmentId={workspaceAssignmentId}
+        onSelectAssignment={setWorkspaceAssignmentId}
+        student={student ? {
+          full_name: student.full_name,
+          roll_number: student.roll_number,
+          department: student.department,
+          semester: student.semester,
+        } : null}
+      />;
     }
 
     // ── Dashboard (default) ──
@@ -1266,6 +1392,7 @@ export function DashboardShell() {
             <AssignmentTable
               rows={allRows.slice(0, 5)}
               loading={dashLoading}
+              onEdit={openAssignmentWorkspace}
               emptyMessage={
                 googleConnected
                   ? "No assignments found. Try syncing your Classroom."
@@ -1441,6 +1568,7 @@ export function DashboardShell() {
     "pdf-documents": "PDF Documents",
     "submission-history": "Submission History",
     notifications: "Notifications",
+    payments: "Payments & License",
     settings: "Account Settings",
   };
   const pageTitle = view === "dashboard" ? "Dashboard" : (viewTitles[view] ?? "Dashboard");
@@ -1467,29 +1595,27 @@ export function DashboardShell() {
         {authPage === "login" && (
           <LoginView
             onSuccess={() => void handleAuthSuccess()}
+            onGoogleSignIn={handleGoogleSignIn}
             onNavigateRegister={() => setAuthPage("register")}
-            onNavigateForgotPassword={() => setAuthPage("forgot-password")}
+            onNavigateForgotPassword={() => router.push("/forgot-password")}
           />
         )}
         {authPage === "register" && (
           <RegisterView
             onSuccess={() => void handleAuthSuccess()}
+            onGoogleSignIn={() => handleGoogleSignIn(true)}
             onNavigateLogin={() => setAuthPage("login")}
           />
         )}
         {authPage === "forgot-password" && (
           <ForgotPasswordView
-            onNavigateLogin={() => setAuthPage("login")}
-            onNavigateResetPassword={() => {
-              setResetToken("");
-              setAuthPage("reset-password");
-            }}
+            onNavigateLogin={handleNavigateLogin}
           />
         )}
         {authPage === "reset-password" && (
           <ResetPasswordView
             initialToken={resetToken}
-            onNavigateLogin={() => setAuthPage("login")}
+            onNavigateLogin={handleNavigateLogin}
           />
         )}
       </>
@@ -1498,6 +1624,21 @@ export function DashboardShell() {
 
   return (
     <div className="min-h-screen bg-[#090D18] text-slate-100">
+      {authNotice && (
+        <div
+          role="status"
+          className="fixed inset-x-4 top-4 z-50 mx-auto flex max-w-xl items-center justify-between gap-4 rounded-xl border border-cyan-500/30 bg-slate-950/95 p-3 text-sm text-cyan-100 shadow-xl"
+        >
+          <span>{authNotice}</span>
+          <button
+            type="button"
+            onClick={() => setAuthNotice(null)}
+            className="shrink-0 text-cyan-300 hover:text-white"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
       {/* Mobile sidebar overlay */}
       {sidebarOpen && (
         <div

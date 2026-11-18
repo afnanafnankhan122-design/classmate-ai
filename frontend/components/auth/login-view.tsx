@@ -7,12 +7,14 @@ import { AuthCardShell } from "./auth-card-shell";
 
 interface LoginViewProps {
   onSuccess: () => void;
+  onGoogleSignIn: () => void;
   onNavigateRegister: () => void;
   onNavigateForgotPassword: () => void;
 }
 
 export function LoginView({
   onSuccess,
+  onGoogleSignIn,
   onNavigateRegister,
   onNavigateForgotPassword,
 }: LoginViewProps) {
@@ -63,6 +65,7 @@ export function LoginView({
     <AuthCardShell
       title="Student Sign In"
       subtitle="Access your academic assignments, deadlines, and smart AI workflow."
+      onGoogleSignIn={onGoogleSignIn}
       footer={
         <p>
           Don&apos;t have an account?{" "}

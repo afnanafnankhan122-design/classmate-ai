@@ -1,6 +1,6 @@
 from datetime import datetime, UTC
 
-from sqlalchemy import ForeignKey, String, UniqueConstraint
+from sqlalchemy import JSON, ForeignKey, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database.base import Base
@@ -19,6 +19,7 @@ class GoogleAccount(Base):
     encrypted_access_token: Mapped[str | None] = mapped_column(String(2000), nullable=True)
     encrypted_refresh_token: Mapped[str | None] = mapped_column(String(2000), nullable=True)
     token_expiry: Mapped[datetime | None] = mapped_column(nullable=True)
+    authorized_scopes: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
     connected_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(UTC))
     last_synced_at: Mapped[datetime | None] = mapped_column(nullable=True)
 

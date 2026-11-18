@@ -17,12 +17,15 @@ from app.services.google_classroom import (
     sync_classroom_data,
 )
 from app.services.google_oauth import (
+    GoogleScopesMissingError,
     GoogleIntegrationNotConfigured,
     delete_google_account,
     get_classroom_credentials,
     get_user_google_account,
     google_http_status,
+    is_google_insufficient_permissions,
 )
+from app.services.entitlements import get_license_status, require_active_license
 from app.api.routes.auth import get_current_user
 
 router = APIRouter(prefix="/classroom", tags=["Google Classroom"])
@@ -41,6 +44,15 @@ def _get_connected_account(db: Session, user: User) -> GoogleAccount:
 def _get_credentials(db: Session, account: GoogleAccount) -> Credentials:
     try:
         return get_classroom_credentials(db, account)
+    except GoogleScopesMissingError as exc:
+        missing = ", ".join(exc.missing_scopes)
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Google Classroom permissions are incomplete. Reconnect Google and approve "
+                f"the required scopes: {missing}."
+            ),
+        ) from exc
     except RefreshError as exc:
         raise HTTPException(
             status_code=401,
@@ -70,6 +82,14 @@ def _google_api_error(
         )
     if status == 403:
         err_msg = str(error)
+        if is_google_insufficient_permissions(error):
+            return HTTPException(
+                status_code=409,
+                detail=(
+                    "Google Classroom permissions are incomplete. Reconnect Google and approve "
+                    "the requested student course and coursework permissions."
+                ),
+            )
         if "not been used in project" in err_msg or "disabled" in err_msg:
             return HTTPException(
                 status_code=403,
@@ -112,6 +132,8 @@ def _sync_if_requested(
     account: GoogleAccount | None,
     auto_sync: bool,
 ) -> None:
+    if not get_license_status(db, user).active:
+        return
     if account is None or (account.last_synced_at is not None and not auto_sync):
         return
 
@@ -138,6 +160,7 @@ def sync_classrooms(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> dict:
+    require_active_license(db, user)
     account = _get_connected_account(db, user)
     credentials = _get_credentials(db, account)
     try:

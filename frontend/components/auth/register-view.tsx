@@ -7,11 +7,13 @@ import { AuthCardShell } from "./auth-card-shell";
 
 interface RegisterViewProps {
   onSuccess: () => void;
+  onGoogleSignIn: () => void;
   onNavigateLogin: () => void;
 }
 
 export function RegisterView({
   onSuccess,
+  onGoogleSignIn,
   onNavigateLogin,
 }: RegisterViewProps) {
   const [fullName, setFullName] = useState("");
@@ -64,6 +66,14 @@ export function RegisterView({
 
   const passwordsMatch = confirmPassword.length > 0 && password === confirmPassword;
 
+  function handleGoogleSignIn() {
+    if (!agreeTerms) {
+      setError("Please agree to the Terms of Use and acknowledge the Privacy Policy before continuing with Google.");
+      return;
+    }
+    onGoogleSignIn();
+  }
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
@@ -101,6 +111,7 @@ export function RegisterView({
           email: cleanEmail,
           password,
           confirm_password: confirmPassword,
+          terms_accepted: agreeTerms,
         }),
       });
       onSuccess();
@@ -115,6 +126,7 @@ export function RegisterView({
     <AuthCardShell
       title="Create Student Account"
       subtitle="Register with your Classroom Email to connect courses and organize assignments."
+      onGoogleSignIn={handleGoogleSignIn}
       footer={
         <p>
           Already have an account?{" "}
@@ -276,12 +288,30 @@ export function RegisterView({
               type="checkbox"
               checked={agreeTerms}
               onChange={(e) => setAgreeTerms(e.target.checked)}
+              required
+              aria-describedby="legal-consent-text"
               className="mt-0.5 h-4 w-4 rounded border-slate-700 bg-slate-900 text-cyan-500 focus:ring-cyan-400 focus:ring-offset-0"
             />
-            <span className="leading-tight">
+            <span id="legal-consent-text" className="leading-relaxed">
               I agree to the{" "}
-              <span className="text-cyan-400 hover:underline">Academic Terms of Use</span> and{" "}
-              <span className="text-cyan-400 hover:underline">Privacy Policy</span>.
+              <a
+                href="/terms"
+                target="_blank"
+                rel="noreferrer"
+                className="text-cyan-300 underline underline-offset-2 hover:text-cyan-200"
+              >
+                Terms of Use
+              </a>{" "}
+              and acknowledge that I have read the{" "}
+              <a
+                href="/privacy"
+                target="_blank"
+                rel="noreferrer"
+                className="text-cyan-300 underline underline-offset-2 hover:text-cyan-200"
+              >
+                Privacy Policy
+              </a>
+              .
             </span>
           </label>
         </div>

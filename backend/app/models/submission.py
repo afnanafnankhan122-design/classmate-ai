@@ -11,7 +11,12 @@ class Submission(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
     assignment_id: Mapped[int] = mapped_column(ForeignKey("assignments.id"), nullable=False)
+    draft_version_id: Mapped[int | None] = mapped_column(
+        ForeignKey("assignment_draft_versions.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
     google_submission_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    google_file_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     submission_status: Mapped[str] = mapped_column(String(50), default="not_submitted", nullable=False)
     submitted_at: Mapped[datetime | None] = mapped_column(nullable=True)
 

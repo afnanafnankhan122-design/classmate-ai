@@ -8,6 +8,7 @@ interface AuthCardShellProps {
   subtitle: string;
   children: React.ReactNode;
   footer?: React.ReactNode;
+  onGoogleSignIn?: () => void;
 }
 
 export function AuthCardShell({
@@ -15,6 +16,7 @@ export function AuthCardShell({
   subtitle,
   children,
   footer,
+  onGoogleSignIn,
 }: AuthCardShellProps) {
   return (
     <div className="relative min-h-screen w-full flex items-center justify-center p-4 sm:p-6 lg:p-8 bg-[#090D16] overflow-hidden">
@@ -65,6 +67,24 @@ export function AuthCardShell({
             <h2 className="text-lg font-semibold text-white tracking-tight">{title}</h2>
             <p className="mt-1 text-xs text-slate-400 leading-relaxed">{subtitle}</p>
           </div>
+
+          {onGoogleSignIn && (
+            <div className="mb-5">
+              <button
+                type="button"
+                onClick={onGoogleSignIn}
+                className="flex w-full items-center justify-center gap-2 rounded-xl border border-slate-700 bg-white px-4 py-2.5 text-sm font-semibold text-slate-900 transition hover:bg-slate-100"
+              >
+                <span aria-hidden="true" className="text-base font-bold text-blue-600">G</span>
+                Continue with Google
+              </button>
+              <div className="mt-4 flex items-center gap-3 text-[10px] uppercase tracking-wider text-slate-500">
+                <span className="h-px flex-1 bg-slate-800" />
+                or use your ClassMate password
+                <span className="h-px flex-1 bg-slate-800" />
+              </div>
+            </div>
+          )}
 
           {/* Main Card Content */}
           {children}

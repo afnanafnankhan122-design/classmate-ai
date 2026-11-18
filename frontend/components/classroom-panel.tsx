@@ -19,7 +19,7 @@ import {
   RefreshCw,
   FileVideo,
 } from "lucide-react";
-import { getApiBase, requestJson } from "@/lib/api";
+import { requestJson } from "@/lib/api";
 
 type UserInfo = {
   full_name: string;
@@ -204,7 +204,6 @@ export function ClassroomPanel({
   onSessionChange: (session: SessionInfo) => void;
   onDashboardRefresh?: () => void;
 }) {
-  const apiBase = getApiBase();
   const [session, setSession] = useState<SessionInfo | null>(null);
   const [courses, setCourses] = useState<CourseInfo[]>([]);
   const [assignments, setAssignments] = useState<ClassroomAssignment[]>([]);
@@ -391,7 +390,7 @@ export function ClassroomPanel({
                 {syncing ? "Syncing..." : "Sync Classrooms"}
               </button>
               <a
-                href={`${apiBase}/api/auth/google/start`}
+                href="/api/auth/google/start"
                 className="inline-flex items-center gap-1.5 rounded-xl border border-slate-700 bg-slate-900/70 px-3 py-2 text-xs font-medium text-slate-300 transition hover:border-slate-500 hover:text-white"
                 title="Reconnect your Google account to refresh permissions"
               >
@@ -411,7 +410,7 @@ export function ClassroomPanel({
             </>
           ) : (
             <a
-              href={`${apiBase}/api/auth/google/start`}
+              href="/api/auth/google/start"
               aria-disabled={loading || !session?.google_oauth_configured}
               tabIndex={loading || !session?.google_oauth_configured ? -1 : 0}
               onClick={(event) => {
@@ -476,7 +475,7 @@ export function ClassroomPanel({
           {session === null && error ? (
             <div className="flex items-center gap-3 text-rose-300">
               <AlertCircle className="h-5 w-5" />
-              <p>ClassMate AI could not reach the backend API at {apiBase}. Ensure the FastAPI server is running.</p>
+              <p>ClassMate AI could not reach its API. Ensure the FastAPI server is running.</p>
             </div>
           ) : session?.google_oauth_configured ? (
             <div className="space-y-3">
@@ -489,7 +488,7 @@ export function ClassroomPanel({
               </p>
               <div className="pt-2">
                 <a
-                  href={`${apiBase}/api/auth/google/start`}
+                  href="/api/auth/google/start"
                   className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-blue-500 shadow-md shadow-blue-500/20"
                 >
                   <GraduationCap className="h-4 w-4" />
@@ -519,7 +518,7 @@ export function ClassroomPanel({
           </p>
           <div className="mt-4">
             <a
-              href={`${apiBase}/api/auth/google/start`}
+              href="/api/auth/google/start"
               className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-500"
             >
               Connect Google Account

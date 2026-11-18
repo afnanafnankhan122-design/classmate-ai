@@ -4,23 +4,39 @@ from unittest.mock import MagicMock, patch
 from zoneinfo import ZoneInfo
 
 from cryptography.fernet import Fernet
+from fastapi import HTTPException
 from google.oauth2.credentials import Credentials
+from googleapiclient.errors import HttpError
+import httplib2
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.core.auth_security import hash_password, verify_password
 from app.core.security import decrypt_google_token, encrypt_google_token
 from app.database.base import Base
 from app.models.assignment import Assignment
 from app.models.course import Course
+from app.api.routes.classroom import _get_credentials
 from app.models.google_account import GoogleAccount
 from app.models.user import User
 from app.services.google_classroom import (
+    _fetch_classroom_data,
     _parse_google_deadline,
     classroom_assignment_dict,
     sync_classroom_data,
 )
-from app.services.google_oauth import get_classroom_credentials, save_google_login
+from app.services.google_oauth import (
+    CLASSROOM_READ_SCOPES,
+    CLASSROOM_STUDENT_READ_SCOPES,
+    GoogleScopesMissingError,
+    GoogleAccountLinkRequired,
+    OAUTH_SCOPES,
+    get_classroom_credentials,
+    missing_google_scopes,
+    require_google_scopes,
+    save_google_login,
+)
 from app.api.routes.dashboard import _is_due_today, _is_overdue
 
 
@@ -184,6 +200,7 @@ class GoogleClassroomSyncTests(unittest.TestCase):
                         encrypted_access_token=encrypt_google_token("expired-access-token"),
                         encrypted_refresh_token=encrypt_google_token("valid-refresh-token"),
                         token_expiry=datetime.now(timezone.utc) - timedelta(hours=2),
+                        authorized_scopes=list(OAUTH_SCOPES),
                     )
                     self.db.add(account)
                     self.db.commit()
@@ -361,6 +378,370 @@ class GoogleClassroomSyncTests(unittest.TestCase):
             )
 
         self.assertTrue(linked_user.is_verified)
+        self.assertEqual(self.db.query(GoogleAccount).count(), 1)
+
+    def test_google_login_reconnect_updates_scopes_on_existing_account(self) -> None:
+        profile = {
+            "id": "reconnected-google-sub",
+            "email": self.user.email,
+            "verified_email": True,
+            "name": self.user.full_name,
+        }
+        account = GoogleAccount(
+            user_id=self.user.id,
+            google_sub="reconnected-google-sub",
+            google_email=self.user.email,
+            authorized_scopes=["openid", "email", "profile"],
+        )
+        self.db.add(account)
+        self.db.commit()
+        credentials = Credentials(
+            token="temporary-access-token",
+            granted_scopes=OAUTH_SCOPES,
+        )
+
+        with patch.object(settings, "google_token_encryption_key", self.fernet_key):
+            user = save_google_login(self.db, self.user, profile, credentials)
+
+        self.assertEqual(user.id, self.user.id)
+        self.assertEqual(self.db.query(GoogleAccount).count(), 1)
+        self.db.refresh(account)
+        self.assertEqual(set(account.authorized_scopes), set(OAUTH_SCOPES))
+        self.assertIn(
+            "https://www.googleapis.com/auth/classroom.coursework.me",
+            account.authorized_scopes,
+        )
+        self.assertFalse(any(".students" in scope for scope in account.authorized_scopes))
+
+    def test_reconnect_does_not_infer_new_grants_when_scope_field_is_omitted(self) -> None:
+        profile = {
+            "id": "reconnected-google-sub",
+            "email": self.user.email,
+            "verified_email": True,
+            "name": self.user.full_name,
+        }
+        previously_confirmed = [
+            "openid",
+            "email",
+            "profile",
+            "https://www.googleapis.com/auth/classroom.courses.readonly",
+        ]
+        account = GoogleAccount(
+            user_id=self.user.id,
+            google_sub="reconnected-google-sub",
+            google_email=self.user.email,
+            authorized_scopes=previously_confirmed.copy(),
+        )
+        self.db.add(account)
+        self.db.commit()
+        credentials = Credentials(
+            token="temporary-access-token",
+            scopes=OAUTH_SCOPES,
+        )
+
+        with patch.object(settings, "google_token_encryption_key", self.fernet_key):
+            save_google_login(self.db, self.user, profile, credentials)
+
+        self.db.refresh(account)
+        self.assertEqual(account.authorized_scopes, previously_confirmed)
+        self.assertNotIn(
+            "https://www.googleapis.com/auth/classroom.coursework.me",
+            account.authorized_scopes,
+        )
+
+    def test_google_scope_string_is_split_and_persisted_as_grants(self) -> None:
+        profile = {
+            "id": "scope-string-google-sub",
+            "email": self.user.email,
+            "verified_email": True,
+            "name": self.user.full_name,
+        }
+        granted_scopes = " ".join(
+            [
+                "openid",
+                "email",
+                "profile",
+                "https://www.googleapis.com/auth/classroom.courses.readonly",
+                "https://www.googleapis.com/auth/classroom.coursework.me",
+            ]
+        )
+        credentials = Credentials(
+            token="temporary-access-token",
+            granted_scopes=granted_scopes,
+        )
+        with patch.object(settings, "google_token_encryption_key", self.fernet_key):
+            save_google_login(self.db, self.user, profile, credentials)
+
+        account = self.db.scalar(
+            select(GoogleAccount).where(
+                GoogleAccount.google_sub == "scope-string-google-sub"
+            )
+        )
+        self.assertIsNotNone(account)
+        self.assertEqual(set(account.authorized_scopes), set(granted_scopes.split()))
+        require_google_scopes(account.authorized_scopes, CLASSROOM_READ_SCOPES)
+
+    def test_missing_read_scopes_require_reconnection_before_sync_credentials(self) -> None:
+        account = GoogleAccount(
+            user_id=self.user.id,
+            google_sub="missing-read-scopes",
+            google_email=self.user.email,
+            encrypted_access_token="stored-encrypted-token",
+            authorized_scopes=["openid", "email", "profile"],
+        )
+        self.db.add(account)
+        self.db.commit()
+
+        with self.assertRaises(GoogleScopesMissingError) as raised:
+            get_classroom_credentials(self.db, account)
+
+        self.assertIn(
+            "https://www.googleapis.com/auth/classroom.coursework.me.readonly",
+            raised.exception.missing_scopes,
+        )
+        self.assertEqual(
+            missing_google_scopes(
+                ["openid", "https://www.googleapis.com/auth/userinfo.email",
+                 "https://www.googleapis.com/auth/userinfo.profile"],
+                ["openid", "email", "profile"],
+            ),
+            [],
+        )
+        with self.assertRaises(HTTPException) as api_error:
+            _get_credentials(self.db, account)
+        self.assertEqual(api_error.exception.status_code, 409)
+        self.assertIn("permissions are incomplete", api_error.exception.detail)
+
+    def test_student_classroom_access_does_not_require_teacher_course_scope(self) -> None:
+        with patch.object(settings, "google_token_encryption_key", self.fernet_key):
+            account = GoogleAccount(
+                user_id=self.user.id,
+                google_sub="student-scopes-only",
+                google_email=self.user.email,
+                encrypted_access_token=encrypt_google_token("temporary-access-token"),
+                authorized_scopes=[
+                    *CLASSROOM_STUDENT_READ_SCOPES,
+                    "openid",
+                    "email",
+                    "profile",
+                ],
+                token_expiry=datetime.now(timezone.utc) + timedelta(hours=1),
+            )
+            self.db.add(account)
+            self.db.commit()
+
+            with (
+                patch.object(settings, "google_client_id", "client-id"),
+                patch.object(settings, "google_client_secret", "client-secret"),
+            ):
+                credentials = _get_credentials(self.db, account)
+
+        self.assertIn(CLASSROOM_STUDENT_READ_SCOPES[0], credentials.scopes)
+        self.assertNotIn(
+            "https://www.googleapis.com/auth/classroom.coursework.students.readonly",
+            account.authorized_scopes,
+        )
+
+    def test_sync_fetches_only_student_courses_and_own_submissions(self) -> None:
+        credentials = Credentials(
+            token="temporary-access-token",
+            scopes=CLASSROOM_STUDENT_READ_SCOPES,
+        )
+        classroom = MagicMock()
+
+        def make_request(response: dict) -> MagicMock:
+            request = MagicMock()
+            request.execute.return_value = response
+            return request
+
+        classroom.courses.return_value.list.return_value = make_request(
+            {"courses": [{"id": "student-course"}]}
+        )
+        classroom.courses.return_value.courseWork.return_value.list.return_value = (
+            make_request({"courseWork": []})
+        )
+        classroom.courses.return_value.courseWork.return_value.studentSubmissions.return_value.list.return_value = (
+            make_request({"studentSubmissions": []})
+        )
+
+        with patch("app.services.google_classroom.build", return_value=classroom):
+            courses, coursework, submissions = _fetch_classroom_data(credentials)
+
+        self.assertEqual([course["id"] for course in courses], ["student-course"])
+        self.assertEqual(coursework, [])
+        self.assertEqual(submissions, {})
+        self.assertEqual(classroom.courses.return_value.list.call_count, 1)
+        classroom.courses.return_value.list.assert_called_once_with(
+            studentId="me",
+            courseStates=["ACTIVE"],
+            pageSize=100,
+        )
+        classroom.courses.return_value.courseWork.return_value.list.assert_called_once_with(
+            courseId="student-course",
+            pageSize=100,
+            orderBy="dueDate asc",
+        )
+        classroom.courses.return_value.courseWork.return_value.studentSubmissions.return_value.list.assert_called_once_with(
+            courseId="student-course",
+            courseWorkId="-",
+            userId="me",
+            pageSize=100,
+        )
+
+    def test_insufficient_coursework_permission_is_not_silently_ignored(self) -> None:
+        credentials = Credentials(token="temporary-access-token", scopes=OAUTH_SCOPES)
+        classroom = MagicMock()
+        classroom.courses.return_value.list.return_value.execute.return_value = {
+            "courses": [{"id": "student-course"}]
+        }
+        response = httplib2.Response({"status": "403"})
+        permission_error = HttpError(
+            response,
+            b'{"error":{"errors":[{"reason":"insufficientPermissions"}]}}',
+        )
+        (
+            classroom.courses.return_value.courseWork.return_value
+            .list.return_value.execute.side_effect
+        ) = permission_error
+
+        with (
+            patch("app.services.google_classroom.build", return_value=classroom),
+            self.assertRaises(HttpError),
+        ):
+            _fetch_classroom_data(credentials)
+
+    def test_partial_google_grant_is_detected_without_exposing_credentials(self) -> None:
+        partial_scopes = ["openid", "email", "profile", CLASSROOM_READ_SCOPES[0]]
+        missing = missing_google_scopes(partial_scopes, OAUTH_SCOPES)
+        self.assertIn("https://www.googleapis.com/auth/classroom.coursework.me", missing)
+        self.assertIn("https://www.googleapis.com/auth/classroom.coursework.me", missing)
+        self.assertNotIn(
+            "https://www.googleapis.com/auth/classroom.coursework.students.readonly",
+            OAUTH_SCOPES,
+        )
+        with self.assertRaises(GoogleScopesMissingError):
+            require_google_scopes(partial_scopes, CLASSROOM_READ_SCOPES)
+        self.assertNotIn("access_token", str(missing))
+        self.assertNotIn("refresh_token", str(missing))
+
+    def test_student_coursework_write_grant_satisfies_read_only_but_not_reverse(self) -> None:
+        coursework_read_only = (
+            "https://www.googleapis.com/auth/classroom.coursework.me.readonly"
+        )
+        coursework_write = "https://www.googleapis.com/auth/classroom.coursework.me"
+        broader_grant = missing_google_scopes(
+            [coursework_write],
+            [coursework_read_only],
+        )
+        self.assertEqual(broader_grant, [])
+
+        weaker_grant = missing_google_scopes(
+            [coursework_read_only],
+            [coursework_write],
+        )
+        self.assertEqual(weaker_grant, [coursework_write])
+
+        legacy_teacher_scope = (
+            "https://www.googleapis.com/auth/classroom.coursework.students.readonly"
+        )
+        self.assertEqual(
+            missing_google_scopes([legacy_teacher_scope], CLASSROOM_READ_SCOPES),
+            CLASSROOM_READ_SCOPES,
+        )
+
+    def test_live_account_scope_set_reports_only_true_missing_read_permissions(self) -> None:
+        stored_grants = [
+            "https://www.googleapis.com/auth/classroom.courses.readonly",
+            "https://www.googleapis.com/auth/classroom.coursework.me",
+            "https://www.googleapis.com/auth/drive.file",
+            "https://www.googleapis.com/auth/userinfo.email",
+            "https://www.googleapis.com/auth/userinfo.profile",
+            "openid",
+        ]
+        missing = missing_google_scopes(stored_grants, CLASSROOM_READ_SCOPES)
+        self.assertEqual(missing, [])
+
+    def test_google_sign_in_creates_verified_account(self) -> None:
+        profile = {
+            "id": "new-google-sub",
+            "email": "new-student@example.test",
+            "verified_email": True,
+            "name": "New Student",
+            "picture": "https://example.test/avatar.png",
+        }
+
+        with patch.object(settings, "google_token_encryption_key", self.fernet_key):
+            user = save_google_login(
+                self.db,
+                None,
+                profile,
+                Credentials(token="temporary-access-token"),
+            )
+
+        self.assertEqual(user.email, "new-student@example.test")
+        self.assertEqual(user.google_id, "new-google-sub")
+        self.assertEqual(user.auth_provider, "google")
+        self.assertTrue(user.is_verified)
+        self.assertIsNone(user.hashed_password)
+        self.assertEqual(self.db.query(GoogleAccount).count(), 1)
+
+    def test_google_sign_in_does_not_link_existing_password_account_by_email(self) -> None:
+        original_password_hash = hash_password("ExistingStudent123!")
+        existing_user = User(
+            full_name="Existing Student",
+            email="existing-student@example.test",
+            hashed_password=original_password_hash,
+            is_verified=False,
+        )
+        self.db.add(existing_user)
+        self.db.commit()
+
+        profile = {
+            "id": "unlinked-google-sub",
+            "email": existing_user.email,
+            "verified_email": True,
+            "name": "Existing Student",
+        }
+
+        with patch.object(settings, "google_token_encryption_key", self.fernet_key):
+            with self.assertRaises(GoogleAccountLinkRequired):
+                save_google_login(
+                    self.db,
+                    None,
+                    profile,
+                    Credentials(token="temporary-access-token"),
+                )
+
+        self.db.refresh(existing_user)
+        self.assertEqual(existing_user.hashed_password, original_password_hash)
+        self.assertTrue(verify_password("ExistingStudent123!", existing_user.hashed_password))
+        self.assertFalse(existing_user.is_verified)
+        self.assertIsNone(existing_user.google_id)
+        self.assertEqual(self.db.query(GoogleAccount).count(), 0)
+
+    def test_google_sign_in_resolves_an_already_linked_google_account(self) -> None:
+        profile = {
+            "id": "existing-google-sub",
+            "email": self.user.email,
+            "verified_email": True,
+            "name": self.user.full_name,
+        }
+
+        with patch.object(settings, "google_token_encryption_key", self.fernet_key):
+            save_google_login(
+                self.db,
+                self.user,
+                profile,
+                Credentials(token="temporary-access-token"),
+            )
+            resolved_user = save_google_login(
+                self.db,
+                None,
+                profile,
+                Credentials(token="refreshed-access-token"),
+            )
+
+        self.assertEqual(resolved_user.id, self.user.id)
         self.assertEqual(self.db.query(GoogleAccount).count(), 1)
 
 

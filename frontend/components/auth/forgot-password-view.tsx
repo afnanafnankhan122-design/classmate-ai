@@ -7,16 +7,15 @@ import { AuthCardShell } from "./auth-card-shell";
 
 interface ForgotPasswordViewProps {
   onNavigateLogin: () => void;
-  onNavigateResetPassword: () => void;
 }
 
 export function ForgotPasswordView({
   onNavigateLogin,
-  onNavigateResetPassword,
 }: ForgotPasswordViewProps) {
   const [email, setEmail] = useState("");
   const [loading, setLoading] = useState(false);
   const [submitted, setSubmitted] = useState(false);
+  const [emailDeliveryConfigured, setEmailDeliveryConfigured] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   async function handleSubmit(e: React.FormEvent) {
@@ -31,14 +30,15 @@ export function ForgotPasswordView({
 
     setLoading(true);
     try {
-      await requestJson<{
+      const response = await requestJson<{
         status: string;
         message: string;
+        email_delivery_configured: boolean;
       }>("/auth/forgot-password", {
         method: "POST",
         body: JSON.stringify({ email: cleanEmail }),
       });
-      setSubmitted(true);
+      setEmailDeliveryConfigured(response.email_delivery_configured);
       setSubmitted(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to process request. Please try again.");
@@ -50,7 +50,7 @@ export function ForgotPasswordView({
   return (
     <AuthCardShell
       title="Reset Your Password"
-      subtitle="Enter your Classroom Email. Recovery email delivery is not configured for this deployment."
+      subtitle="Enter the email address used for your password-enabled ClassMate AI account."
       footer={
         <button
           type="button"
@@ -69,20 +69,22 @@ export function ForgotPasswordView({
             <div className="space-y-1">
               <p className="font-semibold text-emerald-300 text-sm">Recovery Request Received</p>
               <p className="text-slate-300 leading-relaxed">
-              If an account exists for <span className="font-medium text-white">{email}</span>, recovery instructions will be sent once email delivery is configured for this application.
+                If an account exists and supports password sign-in, follow the reset instructions if they arrive. Google-only accounts should continue with Google Sign-In.
               </p>
             </div>
           </div>
-          <button
-            type="button"
-            onClick={onNavigateResetPassword}
-            className="w-full rounded-xl border border-slate-700 px-4 py-2.5 text-sm font-medium text-slate-200 transition hover:border-slate-500"
-          >
-            I have a reset token
-          </button>
+          {emailDeliveryConfigured ? (
+            <p className="text-xs leading-relaxed text-slate-400">
+              If your account is eligible, check your inbox and spam folder. The link expires after 30 minutes.
+            </p>
+          ) : (
+            <p role="status" className="text-xs leading-relaxed text-amber-200">
+              Password recovery email is not configured on this deployment. Contact support or use Google Sign-In if your account uses Google.
+            </p>
+          )}
         </div>
       ) : (
-        <form onSubmit={handleSubmit} className="space-y-4">
+        <form onSubmit={handleSubmit} className="space-y-4" aria-busy={loading}>
           {error && (
             <div className="flex items-start gap-2 rounded-xl border border-rose-500/30 bg-rose-500/10 p-3 text-xs text-rose-300">
               <AlertCircle className="h-4 w-4 shrink-0 mt-0.5 text-rose-400" />
